@@ -13,14 +13,13 @@ model = AutoModelForSequenceClassification.from_pretrained(model_name) # load th
 # Create the sentiment analysis pipeline
 sentiment_analyzer = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
 
-# =====================================================================
+
 # THE ACTUAL SENTIMENT ANALYSIS PART
-# =====================================================================
 #
 # step 1: Loop through each review in the dataset
 # step 2: Analyze the sentiment using the pipeline
 # step 3: Store the results (label and score) in a list
-#
+
 
 results = []
 for review in df["feedback"]: # step 1: loops through each review (column must be named "feedback")
