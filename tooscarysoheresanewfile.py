@@ -13,6 +13,10 @@ MASTER_CSV_PATH = os.path.join(BASE_DIR, "master_sentiment_results.csv")
 REVIEWS_FOLDER = os.path.join(BASE_DIR, "product_reviews")
 FEEDBACK_CSV_PATH = os.path.join(BASE_DIR, "recommendation_feedback.csv")
 
+VALID_HAIR_TYPES = ['straight', 'wavy', 'curly']
+VALID_CATEGORIES = ['Shampoo', 'Conditioner', 'Styling Product']
+TAG_SEPARATOR = '; '
+
 # Create folders if they don't exist
 os.makedirs(REVIEWS_FOLDER, exist_ok=True)
 
@@ -39,6 +43,68 @@ def get_product_reviews_filename(shampoo_name, hair_type):
     return os.path.join(REVIEWS_FOLDER, f"{safe_name}_{hair_type.lower()}.csv")
 
 
+# ==================== HELPER: TAG UTILITIES ====================
+def normalize_tags_input(tags):
+    """Convert raw tag input into a list of unique, trimmed tags"""
+    if tags is None:
+        return []
+    
+    if isinstance(tags, str):
+        raw_tags = [part.strip() for part in tags.replace(';', ',').split(',')]
+    elif isinstance(tags, (list, tuple, set)):
+        raw_tags = [str(tag).strip() for tag in tags]
+    else:
+        return []
+    
+    cleaned = []
+    seen = set()
+    for tag in raw_tags:
+        if not tag:
+            continue
+        key = tag.lower()
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(tag)
+    return cleaned
+
+
+def tags_list_to_string(tags_list):
+    """Convert tag list to storage string"""
+    if not tags_list:
+        return ''
+    return TAG_SEPARATOR.join(tags_list)
+
+
+def parse_tags_string(tags_str):
+    """Parse stored tag string into list"""
+    if not isinstance(tags_str, str) or not tags_str.strip():
+        return []
+    return [tag.strip() for tag in tags_str.split(TAG_SEPARATOR) if tag.strip()]
+
+
+def ensure_columns(df, defaults):
+    """Ensure dataframe has required columns with default values"""
+    if df is None:
+        return df
+    for column, default_value in defaults.items():
+        if column not in df.columns:
+            df[column] = default_value
+    return df
+
+
+def get_all_tags_from_master():
+    """Return sorted list of all tags currently stored"""
+    if not os.path.exists(MASTER_CSV_PATH):
+        return []
+    master_df = pd.read_csv(MASTER_CSV_PATH)
+    master_df = ensure_columns(master_df, {'Tags': ''})
+    tags_set = set()
+    for tag_string in master_df['Tags'].dropna():
+        for tag in parse_tags_string(tag_string):
+            tags_set.add(tag)
+    return sorted(tags_set, key=lambda t: t.lower())
+
+
 # ==================== HELPER: CHECK DUPLICATES ====================
 def is_duplicate_review(new_comment, existing_reviews_df):
     """Check if comment already exists (exact match)"""
@@ -60,7 +126,8 @@ def is_duplicate_review(new_comment, existing_reviews_df):
 
 
 # ==================== FUNCTION 1: ANALYZE AND STORE REVIEWS ====================
-def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, description=None, price=None, product_url=None):
+def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, description=None, price=None,
+                              product_url=None, tags=None, category=None):
     """
     Analyzes sentiment and stores individual reviews + product details.
     
@@ -68,9 +135,15 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
     - (success, message, num_new_reviews, num_duplicates)
     """
     # Validate hair type
-    valid_hair_types = ['straight', 'wavy', 'curly']
-    if hair_type.lower() not in valid_hair_types:
-        return False, f"ERROR: Hair type must be one of {valid_hair_types}", 0, 0
+    if hair_type.lower() not in VALID_HAIR_TYPES:
+        return False, f"ERROR: Hair type must be one of {VALID_HAIR_TYPES}", 0, 0
+    
+    # Validate category
+    if category is None or category not in VALID_CATEGORIES:
+        return False, f"ERROR: Category must be one of {VALID_CATEGORIES}", 0, 0
+    
+    normalized_tags = normalize_tags_input(tags)
+    tags_str = tags_list_to_string(normalized_tags)
     
     # Read the new reviews
     try:
@@ -111,6 +184,7 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
         print(f"Creating new product: {shampoo_name} ({hair_type} hair)")
     else:
         existing_reviews_df = pd.read_csv(product_file)
+        existing_reviews_df = ensure_columns(existing_reviews_df, {'Tags': '', 'Category': ''})
         print(f"Adding reviews to existing product: {shampoo_name} ({hair_type} hair)")
     
     # Analyze sentiment and check duplicates
@@ -142,6 +216,8 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
             'Hair Type': hair_type,
             'Comment': comment,
             'Sentiment Score': sentiment_score,
+            'Tags': tags_str,
+            'Category': category,
             'User Name': row[username_col] if username_col else 'Anonymous',
             'Comment Date': row[date_col] if date_col else 'Unknown',
             'Product URL': product_url if product_url else '',
@@ -174,6 +250,10 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
     else:
         combined_df = new_reviews_df
     
+    combined_df = ensure_columns(combined_df, {'Tags': '', 'Category': ''})
+    combined_df['Tags'] = tags_str
+    combined_df['Category'] = category
+    
     # Save reviews to product file
     combined_df.to_csv(product_file, index=False, encoding='utf-8-sig')
     print(f"Saved {len(combined_df)} total reviews to {product_file}")
@@ -184,7 +264,7 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
     
     # Update master CSV
     update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, description, price, 
-                     product_url, product_image)
+                     product_url, product_image, tags_str, category)
     
     # Delete original CSV
     try:
@@ -201,16 +281,18 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
 
 
 # ==================== FUNCTION 2: UPDATE MASTER CSV ====================
-def update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, description, price, product_url, product_image):
+def update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, description, price,
+                      product_url, product_image, tags, category):
     """Update or add entry to master CSV"""
     
     # Check if master CSV exists
     if os.path.exists(MASTER_CSV_PATH):
         master_df = pd.read_csv(MASTER_CSV_PATH)
+        master_df = ensure_columns(master_df, {'Tags': '', 'Category': ''})
     else:
         master_df = pd.DataFrame(columns=[
             'Shampoo Name', 'Hair Type', 'Avg Sentiment Score', 'Number of Reviews',
-            'Description', 'Price', 'Product URL', 'Product Image', 'Last Updated'
+            'Description', 'Price', 'Product URL', 'Product Image', 'Tags', 'Category', 'Last Updated'
         ])
     
     # Check if product exists
@@ -228,6 +310,10 @@ def update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, descripti
             master_df.loc[mask, 'Product URL'] = product_url
         if product_image:
             master_df.loc[mask, 'Product Image'] = product_image
+        if tags is not None:
+            master_df.loc[mask, 'Tags'] = tags
+        if category:
+            master_df.loc[mask, 'Category'] = category
         master_df.loc[mask, 'Last Updated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         print(f"Updated master CSV entry for {shampoo_name}")
     else:
@@ -241,6 +327,8 @@ def update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, descripti
             'Price': [price if price else ''],
             'Product URL': [product_url if product_url else ''],
             'Product Image': [product_image if product_image else ''],
+            'Tags': [tags if tags else ''],
+            'Category': [category],
             'Last Updated': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         })
         master_df = pd.concat([master_df, new_row], ignore_index=True)
@@ -251,18 +339,33 @@ def update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, descripti
 
 
 # ==================== FUNCTION 3: GET TOP PRODUCTS ====================
-def get_top_products(hair_type, top_n=3):
+def get_top_products(hair_type, top_n=3, category=None, tags=None):
     """Retrieve top N products for a specific hair type"""
     if not os.path.exists(MASTER_CSV_PATH):
         return None, "ERROR: No products in database. Import some products first!"
     
     master_df = pd.read_csv(MASTER_CSV_PATH)
+    master_df = ensure_columns(master_df, {'Tags': '', 'Category': ''})
     
     # Filter by hair type
     filtered = master_df[master_df['Hair Type'].str.lower() == hair_type.lower()]
     
+    # Filter by category if provided (and not "All")
+    if category and category != "All":
+        filtered = filtered[filtered['Category'].str.lower() == category.lower()]
+    
+    normalized_tags = normalize_tags_input(tags)
+    if normalized_tags:
+        required = [tag.lower() for tag in normalized_tags]
+        
+        def has_tags(tag_string):
+            available = {t.lower() for t in parse_tags_string(tag_string)}
+            return all(tag in available for tag in required)
+        
+        filtered = filtered[filtered['Tags'].apply(has_tags)]
+    
     if len(filtered) == 0:
-        return None, f"No products found for {hair_type} hair type"
+        return None, f"No products found for {hair_type} hair type with the selected filters."
     
     # Sort and get top N
     top_products = filtered.sort_values('Avg Sentiment Score', ascending=False).head(top_n)
@@ -279,6 +382,7 @@ def get_product_details(shampoo_name, hair_type):
         return None, "Product reviews not found"
     
     reviews_df = pd.read_csv(product_file)
+    reviews_df = ensure_columns(reviews_df, {'Tags': '', 'Category': ''})
     
     if len(reviews_df) == 0:
         return None, "No reviews available"
@@ -293,6 +397,8 @@ def get_product_details(shampoo_name, hair_type):
         'price': reviews_df['Price'].iloc[0] if 'Price' in reviews_df.columns else '',
         'product_url': reviews_df['Product URL'].iloc[0] if 'Product URL' in reviews_df.columns else '',
         'product_image': reviews_df['Product Image'].iloc[0] if 'Product Image' in reviews_df.columns else '',
+        'tags': parse_tags_string(reviews_df['Tags'].iloc[0]),
+        'category': reviews_df['Category'].iloc[0] if 'Category' in reviews_df.columns else '',
         'reviews': reviews_df
     }
     
@@ -326,8 +432,16 @@ def save_recommendation_feedback(shampoo_name, hair_type, user_hair_type, was_he
 
 
 # ==================== FUNCTION 6: UPDATE PRODUCT DETAILS ====================
-def update_product_details(shampoo_name, hair_type, description=None, price=None):
+def update_product_details(shampoo_name, hair_type, description=None, price=None, tags=None, category=None):
     """Update description and price for existing product"""
+    if category is not None and category not in VALID_CATEGORIES:
+        return False, f"Category must be one of {VALID_CATEGORIES}"
+    
+    tags_to_store = None
+    if tags is not None:
+        normalized = normalize_tags_input(tags)
+        tags_to_store = tags_list_to_string(normalized)
+    
     product_file = get_product_reviews_filename(shampoo_name, hair_type)
     
     if not os.path.exists(product_file):
@@ -335,21 +449,31 @@ def update_product_details(shampoo_name, hair_type, description=None, price=None
     
     # Update reviews file
     reviews_df = pd.read_csv(product_file)
+    reviews_df = ensure_columns(reviews_df, {'Tags': '', 'Category': ''})
     if description:
         reviews_df['Description'] = description
     if price:
         reviews_df['Price'] = price
+    if tags_to_store is not None:
+        reviews_df['Tags'] = tags_to_store
+    if category:
+        reviews_df['Category'] = category
     reviews_df.to_csv(product_file, index=False, encoding='utf-8-sig')
     
     # Update master CSV
     if os.path.exists(MASTER_CSV_PATH):
         master_df = pd.read_csv(MASTER_CSV_PATH)
+        master_df = ensure_columns(master_df, {'Tags': '', 'Category': ''})
         mask = (master_df['Shampoo Name'] == shampoo_name) & (master_df['Hair Type'] == hair_type)
         if mask.any():
             if description:
                 master_df.loc[mask, 'Description'] = description
             if price:
                 master_df.loc[mask, 'Price'] = price
+            if tags_to_store is not None:
+                master_df.loc[mask, 'Tags'] = tags_to_store
+            if category:
+                master_df.loc[mask, 'Category'] = category
             master_df.to_csv(MASTER_CSV_PATH, index=False, encoding='utf-8-sig')
     
     return True, "Product details updated successfully"
@@ -365,6 +489,7 @@ class ShampooAnalyzerApp:
         
         # Load model in background
         self.model_loaded = False
+        self.available_tags = []
         self.load_model_thread()
         
         # Show initial menu
@@ -378,6 +503,10 @@ class ShampooAnalyzerApp:
         
         thread = threading.Thread(target=load, daemon=True)
         thread.start()
+
+    def refresh_available_tags(self):
+        """Refresh cached tag list from master CSV"""
+        self.available_tags = get_all_tags_from_master()
     
     def clear_window(self):
         """Clear all widgets from window"""
@@ -482,6 +611,22 @@ class ShampooAnalyzerApp:
         tk.Label(form_frame, text="Price (optional):", font=("Arial", 11)).grid(row=4, column=0, sticky="w", pady=8, padx=10)
         self.price_entry = tk.Entry(form_frame, font=("Arial", 10), width=35)
         self.price_entry.grid(row=4, column=1, columnspan=2, sticky="w", pady=8)
+
+        # Category
+        tk.Label(form_frame, text="Category:", font=("Arial", 11)).grid(row=5, column=0, sticky="w", pady=8, padx=10)
+        category_options = ["Use existing value"] + VALID_CATEGORIES
+        self.category_var = tk.StringVar(value=category_options[0])
+        category_dropdown = ttk.Combobox(form_frame, textvariable=self.category_var,
+                                         values=category_options, state="readonly",
+                                         font=("Arial", 10), width=32)
+        category_dropdown.grid(row=5, column=1, columnspan=2, sticky="w", pady=8)
+
+        # Tags
+        tk.Label(form_frame, text="Tags (comma separated):", font=("Arial", 11)).grid(row=6, column=0, sticky="nw", pady=8, padx=10)
+        self.tags_entry = tk.Text(form_frame, font=("Arial", 9), width=35, height=3)
+        self.tags_entry.grid(row=6, column=1, columnspan=2, sticky="w", pady=8)
+        tk.Label(form_frame, text="Example: hydrating, anti-frizz, color-safe", font=("Arial", 8), fg="gray")\
+            .grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 5))
         
         # Buttons
         btn_frame = tk.Frame(self.root)
@@ -536,6 +681,45 @@ class ShampooAnalyzerApp:
         hair_type = self.hair_type_var.get()
         description = self.description_text.get("1.0", tk.END).strip()
         price = self.price_entry.get().strip()
+        category_selection = self.category_var.get()
+        tags_raw = self.tags_entry.get("1.0", tk.END).strip()
+        tags_list = normalize_tags_input(tags_raw)
+
+        product_file = get_product_reviews_filename(shampoo_name, hair_type)
+        product_exists = os.path.exists(product_file)
+        existing_category = None
+        existing_tags = []
+
+        if product_exists:
+            try:
+                existing_df = pd.read_csv(product_file)
+                existing_df = ensure_columns(existing_df, {'Category': '', 'Tags': ''})
+                if len(existing_df) > 0:
+                    existing_category = existing_df['Category'].iloc[0] or None
+                    existing_tags = parse_tags_string(existing_df['Tags'].iloc[0])
+            except Exception:
+                existing_category = None
+                existing_tags = []
+
+        if category_selection == "Use existing value":
+            category = existing_category
+        else:
+            category = category_selection
+
+        if category not in VALID_CATEGORIES:
+            messagebox.showerror("Error", "Please select a valid category.")
+            return
+
+        if tags_raw and not tags_list:
+            messagebox.showerror("Error", "Please enter at least one valid tag or leave the field blank.")
+            return
+
+        if not tags_list and existing_tags:
+            tags_list = existing_tags
+
+        if not product_exists and not tags_list:
+            messagebox.showerror("Error", "Please provide at least one tag for new products.")
+            return
         
         # Show processing
         self.root.config(cursor="wait")
@@ -545,13 +729,17 @@ class ShampooAnalyzerApp:
         success, message, num_new, num_dupes = analyze_and_store_reviews(
             self.selected_file, shampoo_name, hair_type, 
             description if description else None,
-            price if price else None
+            price if price else None,
+            product_url=None,
+            tags=tags_list if tags_list else None,
+            category=category
         )
         
         self.root.config(cursor="")
         
         if success:
             messagebox.showinfo("Success", message)
+            self.refresh_available_tags()
             self.show_main_menu()
         else:
             messagebox.showerror("Error", message)
@@ -582,6 +770,29 @@ class ShampooAnalyzerApp:
                                       values=["3", "5", "10"],
                                       state="readonly", font=("Arial", 11), width=20)
         top_n_dropdown.grid(row=1, column=1, sticky="w", pady=10)
+
+        tk.Label(form_frame, text="Category Filter:", font=("Arial", 12)).grid(row=2, column=0, sticky="w", pady=10, padx=10)
+        self.rec_category_var = tk.StringVar(value="All")
+        category_options = ["All"] + VALID_CATEGORIES
+        category_dropdown = ttk.Combobox(form_frame, textvariable=self.rec_category_var,
+                                         values=category_options, state="readonly",
+                                         font=("Arial", 11), width=20)
+        category_dropdown.grid(row=2, column=1, sticky="w", pady=10)
+
+        tk.Label(form_frame, text="Filter by Tags:", font=("Arial", 12)).grid(row=3, column=0, sticky="nw", pady=10, padx=10)
+        self.refresh_available_tags()
+        if self.available_tags:
+            self.tags_listbox = tk.Listbox(form_frame, selectmode="multiple", height=min(6, len(self.available_tags)),
+                                           exportselection=False, width=30)
+            for tag in self.available_tags:
+                self.tags_listbox.insert(tk.END, tag)
+            self.tags_listbox.grid(row=3, column=1, sticky="w", pady=10)
+            tk.Label(form_frame, text="Hold Ctrl or Shift to select multiple tags", font=("Arial", 8), fg="gray")\
+                .grid(row=4, column=1, sticky="w")
+        else:
+            self.tags_listbox = None
+            tk.Label(form_frame, text="No tags available yet. Import products to add some!",
+                     font=("Arial", 9), fg="gray").grid(row=3, column=1, sticky="w", pady=10)
         
         # Get button
         get_btn = tk.Button(self.root, text="Show Recommendations", 
@@ -600,8 +811,16 @@ class ShampooAnalyzerApp:
         """Display recommendations"""
         hair_type = self.rec_hair_type_var.get()
         top_n = int(self.top_n_var.get())
+        category_filter = self.rec_category_var.get() if hasattr(self, 'rec_category_var') else "All"
+        selected_tags = []
+        if hasattr(self, 'tags_listbox') and self.tags_listbox:
+            selected_indices = self.tags_listbox.curselection()
+            selected_tags = [self.available_tags[i] for i in selected_indices]
         
-        top_products, error = get_top_products(hair_type, top_n)
+        category_arg = category_filter if category_filter != "All" else None
+        tags_arg = selected_tags if selected_tags else None
+        
+        top_products, error = get_top_products(hair_type, top_n, category_arg, tags_arg)
         
         if error:
             messagebox.showerror("Error", error)
@@ -642,6 +861,11 @@ class ShampooAnalyzerApp:
             
             name_label = tk.Label(product_frame, text=row['Shampoo Name'], font=("Arial", 12, "bold"))
             name_label.pack(anchor="w")
+
+            category_value = row['Category'] if 'Category' in row.index else ''
+            category_text = category_value if pd.notna(category_value) and category_value else "Not specified"
+            category_label = tk.Label(product_frame, text=f"Category: {category_text}", font=("Arial", 9), fg="#555555")
+            category_label.pack(anchor="w")
             
             # Score and reviews
             info_frame = tk.Frame(product_frame)
@@ -706,6 +930,16 @@ class ShampooAnalyzerApp:
         badge = tk.Label(main_frame, text=f"For {hair_type.upper()} Hair", 
                         font=("Arial", 10), bg="#2196F3", fg="white", padx=10, pady=5)
         badge.pack()
+
+        category_label = tk.Label(main_frame, text=f"Category: {product_info['category'] or 'Not specified'}",
+                                  font=("Arial", 10), fg="#424242")
+        category_label.pack(pady=4)
+
+        tags_frame = tk.Frame(main_frame)
+        tags_frame.pack(pady=5)
+        tk.Label(tags_frame, text="Tags:", font=("Arial", 11, "bold")).pack(anchor="w")
+        tags_value = ", ".join(product_info['tags']) if product_info['tags'] else "No tags recorded yet."
+        tk.Label(tags_frame, text=tags_value, font=("Arial", 10), wraplength=550, justify="left").pack(anchor="w")
         
         # Sentiment score
         score_frame = tk.Frame(main_frame, bg="#E8F5E9", pady=10)
@@ -902,6 +1136,22 @@ class ShampooAnalyzerApp:
         tk.Label(form_frame, text="New Price:", font=("Arial", 11)).grid(row=2, column=0, sticky="w", pady=10, padx=10)
         self.edit_price_entry = tk.Entry(form_frame, font=("Arial", 10), width=35)
         self.edit_price_entry.grid(row=2, column=1, sticky="w", pady=10)
+
+        tk.Label(form_frame, text="Category:", font=("Arial", 11)).grid(row=3, column=0, sticky="w", pady=10, padx=10)
+        self.edit_category_var = tk.StringVar(value="No change")
+        edit_category_dropdown = ttk.Combobox(form_frame, textvariable=self.edit_category_var,
+                                              values=["No change"] + VALID_CATEGORIES,
+                                              state="readonly", font=("Arial", 10), width=35)
+        edit_category_dropdown.grid(row=3, column=1, sticky="w", pady=10)
+
+        tk.Label(form_frame, text="Tags (comma separated):", font=("Arial", 11)).grid(row=4, column=0, sticky="w", pady=10, padx=10)
+        self.edit_tags_entry = tk.Entry(form_frame, font=("Arial", 10), width=35)
+        self.edit_tags_entry.grid(row=4, column=1, sticky="w", pady=10)
+
+        self.clear_tags_var = tk.BooleanVar(value=False)
+        clear_tags_cb = tk.Checkbutton(form_frame, text="Clear existing tags", variable=self.clear_tags_var,
+                                       font=("Arial", 9))
+        clear_tags_cb.grid(row=5, column=1, sticky="w")
         
         # Buttons
         btn_frame = tk.Frame(self.root)
@@ -933,17 +1183,35 @@ class ShampooAnalyzerApp:
         
         description = self.edit_desc_text.get("1.0", tk.END).strip()
         price = self.edit_price_entry.get().strip()
+        category_selection = self.edit_category_var.get() if hasattr(self, 'edit_category_var') else "No change"
+        tags_value = self.edit_tags_entry.get().strip() if hasattr(self, 'edit_tags_entry') else ""
+        tags_to_update = None
         
-        if not description and not price:
-            messagebox.showwarning("Warning", "Please enter at least one field to update")
+        if tags_value:
+            tags_to_update = normalize_tags_input(tags_value)
+            if not tags_to_update:
+                messagebox.showerror("Error", "Please enter at least one valid tag or leave the field empty.")
+                return
+        elif self.clear_tags_var.get():
+            tags_to_update = []
+        
+        category_value = None
+        if category_selection and category_selection != "No change":
+            category_value = category_selection
+        
+        if not description and not price and tags_to_update is None and category_value is None:
+            messagebox.showwarning("Warning", "Please update at least one field before saving.")
             return
         
         success, message = update_product_details(shampoo_name, hair_type,
                                                  description if description else None,
-                                                 price if price else None)
+                                                 price if price else None,
+                                                 tags=tags_to_update,
+                                                 category=category_value)
         
         if success:
             messagebox.showinfo("Success", message)
+            self.refresh_available_tags()
             self.show_main_menu()
         else:
             messagebox.showerror("Error", message)
