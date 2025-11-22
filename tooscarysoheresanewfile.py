@@ -130,10 +130,22 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
                               product_url=None, tags=None, category=None):
     """
     Analyzes sentiment and stores individual reviews + product details.
-    
+
+    `input_csv_path` can be a single CSV path or an iterable of paths for bulk imports.
+
     Returns:
     - (success, message, num_new_reviews, num_duplicates)
     """
+    # Normalize csv path(s)
+    if isinstance(input_csv_path, (list, tuple, set)):
+        csv_paths = [path for path in input_csv_path if path]
+    elif isinstance(input_csv_path, str):
+        csv_paths = [input_csv_path]
+    else:
+        return False, "ERROR: Invalid CSV input. Please select one or more CSV files.", 0, 0
+
+    if not csv_paths:
+        return False, "ERROR: No CSV files selected.", 0, 0
     # Validate hair type
     if hair_type.lower() not in VALID_HAIR_TYPES:
         return False, f"ERROR: Hair type must be one of {VALID_HAIR_TYPES}", 0, 0
@@ -145,35 +157,7 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
     normalized_tags = normalize_tags_input(tags)
     tags_str = tags_list_to_string(normalized_tags)
     
-    # Read the new reviews
-    try:
-        new_df = pd.read_csv(input_csv_path)
-    except Exception as e:
-        return False, f"ERROR reading CSV: {str(e)}", 0, 0
-    
-    # Find required columns (case-insensitive)
-    comment_col = None
-    for col in new_df.columns:
-        if col.lower() == 'comment':
-            comment_col = col
-            break
-    
-    if comment_col is None:
-        return False, "ERROR: CSV must have a 'Comment' column", 0, 0
-    
-    # Find optional columns
-    username_col = next((col for col in new_df.columns if col.lower() == 'user name'), None)
-    date_col = next((col for col in new_df.columns if col.lower() == 'comment date'), None)
-    url_col = next((col for col in new_df.columns if col.lower() == 'product url'), None)
-    image_col = next((col for col in new_df.columns if col.lower() == 'product image'), None)
-    
-    # Get product URL and image from CSV if not provided
-    if product_url is None and url_col and len(new_df) > 0:
-        product_url = str(new_df[url_col].iloc[0])
-    if image_col and len(new_df) > 0:
-        product_image = str(new_df[image_col].iloc[0])
-    else:
-        product_image = None
+    product_image = None
     
     # Check if product already exists
     product_file = get_product_reviews_filename(shampoo_name, hair_type)
@@ -187,47 +171,87 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
         existing_reviews_df = ensure_columns(existing_reviews_df, {'Tags': '', 'Category': ''})
         print(f"Adding reviews to existing product: {shampoo_name} ({hair_type} hair)")
     
+    # Prepare duplicate tracking
+    existing_comments = set()
+    if existing_reviews_df is not None:
+        comment_col_existing = next((col for col in existing_reviews_df.columns if col.lower() == 'comment'), None)
+        if comment_col_existing:
+            existing_comments = set(existing_reviews_df[comment_col_existing].dropna().astype(str).tolist())
+
     # Analyze sentiment and check duplicates
     new_reviews = []
     num_duplicates = 0
-    
-    print(f"Analyzing {len(new_df)} reviews...")
-    
-    for idx, row in new_df.iterrows():
-        comment = str(row[comment_col])
-        
-        # Check for duplicates
-        if is_duplicate_review(comment, existing_reviews_df):
-            num_duplicates += 1
-            print(f"Skipping duplicate review #{idx+1}")
-            continue
-        
-        # Analyze sentiment
+    processed_files = []
+    file_errors = []
+
+    for csv_path in csv_paths:
         try:
-            analysis = sentiment_analyzer(comment[:512])[0]
-            sentiment_score = analysis['score']
+            new_df = pd.read_csv(csv_path)
         except Exception as e:
-            print(f"Error analyzing review #{idx+1}, skipping...")
+            file_errors.append(f"{os.path.basename(csv_path)}: {str(e)}")
             continue
-        
-        # Build review data
-        review_data = {
-            'Product Name': shampoo_name,
-            'Hair Type': hair_type,
-            'Comment': comment,
-            'Sentiment Score': sentiment_score,
-            'Tags': tags_str,
-            'Category': category,
-            'User Name': row[username_col] if username_col else 'Anonymous',
-            'Comment Date': row[date_col] if date_col else 'Unknown',
-            'Product URL': product_url if product_url else '',
-            'Product Image': product_image if product_image else '',
-            'Description': description if description else '',
-            'Price': price if price else '',
-            'Analyzed Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        new_reviews.append(review_data)
+
+        comment_col = next((col for col in new_df.columns if col.lower() == 'comment'), None)
+        if comment_col is None:
+            file_errors.append(f"{os.path.basename(csv_path)}: Missing 'Comment' column")
+            continue
+
+        username_col = next((col for col in new_df.columns if col.lower() == 'user name'), None)
+        date_col = next((col for col in new_df.columns if col.lower() == 'comment date'), None)
+        url_col = next((col for col in new_df.columns if col.lower() == 'product url'), None)
+        image_col = next((col for col in new_df.columns if col.lower() == 'product image'), None)
+
+        # Capture metadata once if not provided externally
+        if product_url is None and url_col and len(new_df) > 0:
+            candidate_url = str(new_df[url_col].iloc[0])
+            if candidate_url:
+                product_url = candidate_url
+        if product_image is None and image_col and len(new_df) > 0:
+            candidate_image = str(new_df[image_col].iloc[0])
+            if candidate_image:
+                product_image = candidate_image
+
+        print(f"Analyzing {len(new_df)} reviews from {os.path.basename(csv_path)}...")
+        processed_files.append(csv_path)
+
+        for idx, row in new_df.iterrows():
+            comment = str(row[comment_col]).strip()
+            
+            if not comment:
+                continue
+
+            if comment in existing_comments:
+                num_duplicates += 1
+                continue
+
+            try:
+                analysis = sentiment_analyzer(comment[:512])[0]
+                sentiment_score = analysis['score']
+            except Exception as e:
+                print(f"Error analyzing review #{idx+1} in {os.path.basename(csv_path)}, skipping...")
+                continue
+
+            review_data = {
+                'Product Name': shampoo_name,
+                'Hair Type': hair_type,
+                'Comment': comment,
+                'Sentiment Score': sentiment_score,
+                'Tags': tags_str,
+                'Category': category,
+                'User Name': row[username_col] if username_col else 'Anonymous',
+                'Comment Date': row[date_col] if date_col else 'Unknown',
+                'Product URL': product_url if product_url else '',
+                'Product Image': product_image if product_image else '',
+                'Description': description if description else '',
+                'Price': price if price else '',
+                'Analyzed Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+            new_reviews.append(review_data)
+            existing_comments.add(comment)
+
+    if len(processed_files) == 0:
+        return False, "ERROR: Unable to read any of the selected CSV files.", 0, 0
     
     if len(new_reviews) == 0:
         if num_duplicates > 0:
@@ -266,18 +290,32 @@ def analyze_and_store_reviews(input_csv_path, shampoo_name, hair_type, descripti
     update_master_csv(shampoo_name, hair_type, avg_score, num_reviews, description, price, 
                      product_url, product_image, tags_str, category)
     
-    # Delete original CSV
-    try:
-        os.remove(input_csv_path)
-        print(f"Deleted original CSV: {input_csv_path}")
-    except Exception as e:
-        print(f"Warning: Could not delete file: {str(e)}")
+    # Delete original CSV(s)
+    for csv_path in processed_files:
+        try:
+            os.remove(csv_path)
+            print(f"Deleted original CSV: {csv_path}")
+        except Exception as e:
+            print(f"Warning: Could not delete file {csv_path}: {str(e)}")
     
     print(f"{'='*60}")
     print("PROCESS COMPLETE!")
     print(f"{'='*60}\n")
     
-    return True, f"Successfully processed!\nNew reviews: {len(new_reviews)}\nDuplicates skipped: {num_duplicates}\nTotal reviews: {num_reviews}\nAvg Sentiment: {avg_score:.4f}", len(new_reviews), num_duplicates
+    message_lines = [
+        "Successfully processed!",
+        f"CSV files processed: {len(processed_files)}",
+        f"New reviews: {len(new_reviews)}",
+        f"Duplicates skipped: {num_duplicates}",
+        f"Total reviews: {num_reviews}",
+        f"Avg Sentiment: {avg_score:.4f}"
+    ]
+
+    if file_errors:
+        message_lines.append("\nFiles with issues:")
+        message_lines.extend(f"- {err}" for err in file_errors)
+
+    return True, "\n".join(message_lines), len(new_reviews), num_duplicates
 
 
 # ==================== FUNCTION 2: UPDATE MASTER CSV ====================
@@ -490,6 +528,7 @@ class ShampooAnalyzerApp:
         # Load model in background
         self.model_loaded = False
         self.available_tags = []
+        self.selected_files = []
         self.load_model_thread()
         
         # Show initial menu
@@ -581,13 +620,17 @@ class ShampooAnalyzerApp:
         
         # CSV File
         tk.Label(form_frame, text="CSV File:", font=("Arial", 11)).grid(row=0, column=0, sticky="w", pady=8, padx=10)
-        self.file_label = tk.Label(form_frame, text="No file selected", font=("Arial", 9), fg="gray")
+        self.file_label = tk.Label(form_frame, text="No files selected", font=("Arial", 9), fg="gray")
         self.file_label.grid(row=0, column=1, sticky="w", pady=8)
-        self.selected_file = None
+        self.selected_files = []
         
-        select_btn = tk.Button(form_frame, text="Select File", command=self.select_file,
+        select_btn = tk.Button(form_frame, text="Select File", command=lambda: self.select_file(False),
                               font=("Arial", 9), bg="#E0E0E0", cursor="hand2")
         select_btn.grid(row=0, column=2, padx=10)
+        
+        multi_btn = tk.Button(form_frame, text="Select Multiple Files", command=lambda: self.select_file(True),
+                              font=("Arial", 9), bg="#D1C4E9", cursor="hand2")
+        multi_btn.grid(row=0, column=3, padx=5)
         
         # Shampoo name
         tk.Label(form_frame, text="Shampoo Name:", font=("Arial", 11)).grid(row=1, column=0, sticky="w", pady=8, padx=10)
@@ -644,35 +687,58 @@ class ShampooAnalyzerApp:
                             bg="#757575", fg="white", cursor="hand2")
         back_btn.pack(side="left", padx=10)
     
-    def select_file(self):
-        """Open file dialog to select CSV"""
-        filename = filedialog.askopenfilename(
-            title="Select CSV file with reviews",
+    def select_file(self, allow_multiple=False):
+        """Open file dialog to select one or many CSV files"""
+        dialog_fn = filedialog.askopenfilenames if allow_multiple else filedialog.askopenfilename
+        result = dialog_fn(
+            title="Select CSV file(s) with reviews",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
-        if filename:
-            self.selected_file = filename
-            display_name = os.path.basename(filename)
+
+        if allow_multiple:
+            filenames = list(result) if result else []
+            self.selected_files = filenames
+        else:
+            self.selected_files = [result] if result else []
+
+        self.update_file_label()
+
+        if self.selected_files:
+            self.autofill_product_name_from_csv(self.selected_files[0])
+
+    def update_file_label(self):
+        """Refresh the label that shows selected file(s)"""
+        if not hasattr(self, 'file_label'):
+            return
+
+        if not self.selected_files:
+            self.file_label.config(text="No files selected", fg="gray")
+        elif len(self.selected_files) == 1:
+            display_name = os.path.basename(self.selected_files[0])
             self.file_label.config(text=display_name, fg="black")
+        else:
+            self.file_label.config(text=f"{len(self.selected_files)} files selected", fg="black")
+
+    def autofill_product_name_from_csv(self, filename):
+        """Attempt to populate the shampoo name field using the first selected CSV"""
+        try:
+            temp_df = pd.read_csv(filename)
+            product_col = next((col for col in temp_df.columns if col.lower() == 'product name'), None)
             
-            # Try to auto-fill product name
-            try:
-                temp_df = pd.read_csv(filename)
-                product_col = next((col for col in temp_df.columns if col.lower() == 'product name'), None)
-                
-                if product_col and len(temp_df) > 0:
-                    product_name = str(temp_df[product_col].iloc[0])
-                    self.shampoo_entry.delete(0, tk.END)
-                    self.shampoo_entry.insert(0, product_name)
-            except:
-                pass
+            if product_col and len(temp_df) > 0:
+                product_name = str(temp_df[product_col].iloc[0])
+                self.shampoo_entry.delete(0, tk.END)
+                self.shampoo_entry.insert(0, product_name)
+        except Exception:
+            pass
     
     def process_import(self):
         """Process the import"""
-        if not self.selected_file:
+        if not self.selected_files:
             messagebox.showerror("Error", "Please select a CSV file")
             return
         
+        file_paths = list(self.selected_files)
         shampoo_name = self.shampoo_entry.get().strip()
         if not shampoo_name:
             messagebox.showerror("Error", "Please enter a shampoo name")
@@ -726,8 +792,10 @@ class ShampooAnalyzerApp:
         self.root.update()
         
         # Process
+        csv_input = file_paths if len(file_paths) > 1 else file_paths[0]
+
         success, message, num_new, num_dupes = analyze_and_store_reviews(
-            self.selected_file, shampoo_name, hair_type, 
+            csv_input, shampoo_name, hair_type, 
             description if description else None,
             price if price else None,
             product_url=None,
