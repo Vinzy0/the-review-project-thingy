@@ -4,7 +4,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras.utils import load_img, img_to_array
 
-from recommendations import recommend_products, generate_explanation
+from sentiment_engine import recommend_products, generate_explanation
 
 app = Flask(__name__)
 
