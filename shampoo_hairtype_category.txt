@@ -1,8 +1,6 @@
-Palmolive Naturals Ultra Smooth Shampoo 1L Pump, Pack of 3 | straight | nan
-LOreal Professionnel Serie Expert Absolut Repair Gold Hair Mask (Dry and Damaged Hair) 250ml | straight | nan
-Not Your Mother's Curl Talk Defining Hair Cream | straight | nan
-Curls by Zenutrients Leave-In Conditioner with Avocado & Tea Tree (Protein-Free, Curl Define & CGM) | curly | nan
-Curlico. Curl Defining Crème Gel | curly | nan
+Palmolive Naturals Ultra Smooth Shampoo 1L Pump, Pack of 3 | straight | Shampoo
+Curls by Zenutrients Leave-In Conditioner with Avocado & Tea Tree (Protein-Free, Curl Define & CGM) | curly | Conditioner
+Curlico. Curl Defining Crème Gel | curly | Styling Product
 Pantene Pro-V Shampoo Hair Fall Control Hair Care 1200ml | straight | Shampoo
 Sunsilk Smooth & Manageable Shampoo 350ml | straight | Shampoo
 Dove Shampoo Straight & Silky 1.4L | straight | Shampoo
@@ -23,3 +21,10 @@ CREAMSILK Ultimate Reborn Hairfall Defense Tri-Oleo Conditioner 180ml | wavy | C
 DOVE Nourishing Oil Care 1 Minute Serum Conditioner 150ml | curly | Conditioner
 Palmolive Naturals Silky Straight with Keratin Cream Conditioner 180ml | straight | Conditioner
 Cream Silk Triple Keratin Rescue Ultra Conditioner Ultimate Repair and Shine 170ml | curly | Conditioner
+Curls by Zenutrients Avocado & Tea Tree Sulfate-Free Shampoo 500ml (Curl Define, Organic & CGM) | curly | Shampoo
+TRESEMME Shampoo Keratin Smooth 330ml | straight | Shampoo
+[NEW] mise en scene Perfect Serum Original 80mL | straight | Styling Product
+Vitress Hair Cuticle Coat Classic 15ml | straight | Styling Product
+Human Nature Salon Care Natural Shampoo | wavy | Shampoo
+Dove Restorative Oil Nourishing Care Shampoo 185mL for Shiny, Smooth Hair | wavy | Shampoo
+Human Nature Strengthening Conditioner CGM Friendly Hairfall And Breakage Control | wavy | Conditioner

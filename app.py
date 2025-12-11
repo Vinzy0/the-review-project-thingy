@@ -1,54 +1,42 @@
 import os
 from flask import Flask, request, jsonify
-import tensorflow as tf
-import numpy as np
-from tensorflow.keras.utils import load_img, img_to_array
-
+# Import your logic from the other file
 from sentiment_engine import recommend_products, generate_explanation
 
 app = Flask(__name__)
 
-# Load CNN model
-MODEL_PATH = "hair_type_efficientnetb3_finetuned.h5"
-IMG_SIZE = (300, 300)
-CLASS_NAMES = ["Straight", "Wavy", "Curly"]
+# This is the API Endpoint
+# URL: http://<your-ip>:5000/recommend
+# Method: POST (Because we are sending data to it)
+@app.route("/recommend", methods=["POST"])
+def recommend():
+    # 1. RECEIVE THE ORDER
+    # The app sends JSON data like: {"hair_type": "Curly", "confidence": 95.5}
+    data = request.get_json()
+    
+    # Check if they actually sent the data
+    if not data or 'hair_type' not in data:
+        return jsonify({"error": "Please provide a hair_type"}), 400
 
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    hair_type = data['hair_type']
+    confidence = data.get('confidence', 0.0) # Default to 0 if not provided
 
-def predict_hair_type(img_path):
-    img = load_img(img_path, target_size=IMG_SIZE)
-    img_array = img_to_array(img)
-    img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
-    img_array = np.expand_dims(img_array, axis=0)
-
-    preds = [model.predict(img_array, verbose=0) for _ in range(10)]
-    avg_pred = np.mean(preds, axis=0)
-    hair_type = CLASS_NAMES[np.argmax(avg_pred)]
-    confidence = float(np.max(avg_pred) * 100)
-    return hair_type, confidence
-
-@app.route("/predict", methods=["POST"])
-def predict():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"})
-
-    file = request.files["file"]
-    filepath = os.path.join("temp_image.jpg")
-    file.save(filepath)
-
-    # CNN
-    hair_type, confidence = predict_hair_type(filepath)
-
-    # NLP
+    # 2. TELL THE KITCHEN (Run your Python Logic)
+    # This calls the functions you already wrote in sentiment_engine.py
     recommendations = recommend_products(hair_type)
     explanation = generate_explanation(hair_type, confidence, recommendations)
 
-    return jsonify({
-        "hair_type": hair_type,
-        "confidence": confidence,
-        "recommendations": recommendations,
-        "explanation": explanation
-    })
+    # 3. SERVE THE DISH (Return JSON)
+    # We pack everything into a nice dictionary and convert it to JSON
+    response = {
+        "status": "success",
+        "hair_type_analyzed": hair_type,
+        "explanation": explanation,
+        "recommendations": recommendations
+    }
+    
+    return jsonify(response)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # host='0.0.0.0' means "listen to anyone on this wifi network"
+    app.run(host='0.0.0.0', port=5000, debug=True)

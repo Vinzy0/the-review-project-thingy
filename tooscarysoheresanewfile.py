@@ -1,6 +1,11 @@
+import os
+
+# Force transformers to ignore TensorFlow, which is misconfigured in this environment
+# and breaking the import of `pipeline`. We only need the PyTorch backend.
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-import os
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox, scrolledtext
 import threading
